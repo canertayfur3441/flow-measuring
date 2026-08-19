@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>P&ID Hat Simülasyonu</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #1e1e1e; color: #fff; text-align: center; margin: 20px; }
+        #canvas-container { position: relative; display: inline-block; background: #2b2b2b; border: 2px solid #555; border-radius: 8px; }
+        canvas { display: block; }
+        .controls { margin-top: 15px; display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; }
+        button { padding: 10px 15px; font-weight: bold; cursor: pointer; border: none; border-radius: 5px; background: #007acc; color: white; transition: 0.2s; }
+        button:hover { background: #005999; }
+        .status-panel { margin-top: 15px; font-size: 14px; color: #aaa; }
+    </style>
+</head>
+<body>
+
+    <h2>P&ID Gaz Akış Simülasyonu</h2>
+    <p>Vanaların üzerine tıklayarak durumlarını (AÇIK / KAPALI) değiştirebilirsin.</p>
+
+    <div id="canvas-container">
+        <canvas id="pidCanvas" width="900" height="450"></canvas>
+    </div>
+
+    <div class="controls">
+        <button onclick="resetValves()">Reset (Başlangıç Durumu)</button>
+        <button onclick="setScenario(1)">Senaryo 1: Üst Hat Aktif</button>
+        <button onclick="setScenario(2)">Senaryo 2: Alt Hat Aktif</button>
+        <button onclick="setScenario(3)">Senaryo 3: Mavi By-Pass Aktif</button>
+    </div>
+
+    <div class="status-panel" id="status">Sistem Durumu: Beklemede</div>
+
+    <script>
+        const canvas = document.getElementById('pidCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Vana Durumları
+        const valves = {
+            GOV21205: { x: 250, y: 120, open: true, label: "GOV21205" },
+            HV21203:  { x: 750, y: 120, open: true, label: "HV21203 (Kırmızı)", color: "red" },
+            GOV21206: { x: 250, y: 320, open: false, label: "GOV21206" },
+            HV21204:  { x: 750, y: 320, open: false, label: "HV21204" },
+            HV21205:  { x: 500, y: 220, open: false, label: "HV21205 (Mavi)", color: "blue" }
+        };
+
+        let dashOffset = 0;
+
+        function drawPipe(x1, y1, x2, y2, active) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = active ? "#00ffcc" : "#555";
+            ctx.stroke();
+
+            if (active) {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#ffffff";
+                ctx.setLineDash([8, 8]);
+                ctx.lineDashOffset = -dashOffset;
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        function drawValve(key) {
+            const v = valves[key];
+            const size = 15;
+            ctx.save();
+            ctx.translate(v.x, v.y);
+
+            // Vana Çizimi (Kelebek/Solenoid Simgesi)
+            ctx.beginPath();
+            ctx.moveTo(-size, -size);
+            ctx.lineTo(size, size);
+            ctx.lineTo(size, -size);
+            ctx.lineTo(-size, size);
+            ctx.closePath();
+            
+            ctx.fillStyle = v.open ? "#00ff00" : "#ff3333";
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "#fff";
+            ctx.stroke();
+
+            // Kutu Vurgusu (Kırmızı / Mavi Kutu)
+            if (v.color === "red") {
+                ctx.strokeStyle = "red";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(-size - 8, -size - 8, (size * 2) + 16, (size * 2) + 16);
+            } else if (v.color === "blue") {
+                ctx.strokeStyle = "#0099ff";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(-size - 8, -size - 8, (size * 2) + 16, (size * 2) + 16);
+            }
+
+            // Etiket
+            ctx.fillStyle = "#fff";
+            ctx.font = "12px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(v.label, 0, size + 18);
+            ctx.fillText(v.open ? "[AÇIK]" : "[KAPALI]", 0, size + 32);
+
+            ctx.restore();
+        }
+
+        function drawInstruments() {
+            // Üst Sayaç / FT21201
+            ctx.fillStyle = "#ffcc00";
+            ctx.beginPath(); ctx.arc(500, 120, 18, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = "#000"; ctx.font = "10px Arial"; ctx.textAlign = "center";
+            ctx.fillText("FT21201", 500, 124);
+
+            // Alt Sayaç / FT21202
+            ctx.fillStyle = "#ffcc00";
+            ctx.beginPath(); ctx.arc(500, 320, 18, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = "#000"; ctx.fillText("FT21202", 500, 324);
+        }
+
+        function updateSimulation() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Akış Mantığı Hesaplama
+            const inMain = true; // Ana giriş her zaman basınçlı
+            
+            const topBranchActive = inMain && valves.GOV21205.open;
+            const topOutActive = topBranchActive && valves.HV21203.open;
+
+            const bypassActive = topBranchActive && valves.HV21205.open;
+
+            const bottomBranchActive = (inMain && valves.GOV21206.open) || bypassActive;
+            const bottomOutActive = bottomBranchActive && valves.HV21204.open;
+
+            const mainOutActive = topOutActive || bottomOutActive;
+
+            // Hatları Çiz
+            // Ana Giriş
+            drawPipe(50, 220, 100, 220, true);
+            drawPipe(100, 120, 100, 320, true);
+
+            // Üst Kol
+            drawPipe(100, 120, valves.GOV21205.x, 120, topBranchActive);
+            drawPipe(valves.GOV21205.x, 120, 500, 120, topBranchActive);
+            drawPipe(500, 120, valves.HV21203.x, 120, topBranchActive);
+            drawPipe(valves.HV21203.x, 120, 800, 120, topOutActive);
+
+            // By-Pass Kolu (Mavi Kutu Bağlantısı)
+            drawPipe(500, 120, 500, valves.HV21205.y, topBranchActive);
+            drawPipe(500, valves.HV21205.y, 500, 320, bypassActive);
+
+            // Alt Kol
+            drawPipe(100, 320, valves.GOV21206.x, 320, inMain && valves.GOV21206.open);
+            drawPipe(valves.GOV21206.x, 320, 500, 320, inMain && valves.GOV21206.open);
+            drawPipe(500, 320, valves.HV21204.x, 320, bottomBranchActive);
+            drawPipe(valves.HV21204.x, 320, 800, 320, bottomOutActive);
+
+            // Çıkış Manifold
+            drawPipe(800, 120, 800, 320, mainOutActive);
+            drawPipe(800, 220, 850, 220, mainOutActive);
+
+            // Elemanları Çiz
+            drawInstruments();
+            for (let key in valves) {
+                drawValve(key);
+            }
+
+            // Durum Metni Güncelle
+            let statusText = "Aktif Akış Hattı: ";
+            if (topOutActive) statusText += "[Üst Hat Çıkışı] ";
+            if (bottomOutActive) statusText += "[Alt Hat Çıkışı] ";
+            if (bypassActive) statusText += "[Mavi By-Pass Üzerinden] ";
+            if (!mainOutActive) statusText = "Sistem Durumu: Akış Kapalı / Blokajda";
+            document.getElementById("status").innerText = statusText;
+
+            dashOffset += 1;
+            requestAnimationFrame(updateSimulation);
+        }
+
+        // Tıklama Kontrolü
+        canvas.addEventListener('click', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            for (let key in valves) {
+                const v = valves[key];
+                if (Math.abs(mouseX - v.x) < 25 && Math.abs(mouseY - v.y) < 25) {
+                    v.open = !v.open;
+                    break;
+                }
+            }
+        });
+
+        function resetValves() {
+            valves.GOV21205.open = true;
+            valves.HV21203.open = true;
+            valves.GOV21206.open = false;
+            valves.HV21204.open = false;
+            valves.HV21205.open = false;
+        }
+
+        function setScenario(id) {
+            if (id === 1) { // Üst Hat
+                valves.GOV21205.open = true;  valves.HV21203.open = true;
+                valves.GOV21206.open = false; valves.HV21204.open = false;
+                valves.HV21205.open = false;
+            } else if (id === 2) { // Alt Hat
+                valves.GOV21205.open = false; valves.HV21203.open = false;
+                valves.GOV21206.open = true;  valves.HV21204.open = true;
+                valves.HV21205.open = false;
+            } else if (id === 3) { // By-Pass
+                valves.GOV21205.open = true;  valves.HV21203.open = false;
+                valves.HV21205.open = true;   valves.HV21204.open = true;
+                valves.GOV21206.open = false;
+            }
+        }
+
+        updateSimulation();
+    </script>
+</body>
+</html>
